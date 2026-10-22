@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         灵台自动连砍
 // @namespace    https://k40.shengqainbang.cn/
-// @version      1.4.0
+// @version      1.5.0
 // @description  按设定间隔点击“连砍 10 刀”，直到当前斧力归零。
 // @match        https://k40.shengqainbang.cn/*
 // @run-at       document-idle
@@ -29,6 +29,9 @@
     clicks: 0,
     startedAt: 0,
     elapsedMs: 0,
+    zeroMode: false,
+    zeroAxeClicks: 0,
+    zeroDisabledChecks: 0,
     lastAxe: null,
   };
 
@@ -208,7 +211,10 @@
     const status = panel.querySelector('#lac-status');
     bindPanelDrag(panel, panel.querySelector('.lac-head'));
     panel.querySelector('#lac-start').addEventListener('click', start);
-    panel.querySelector('#lac-stop').addEventListener('click', () => stop('已手动停止。'));
+    panel.querySelector('#lac-stop').addEventListener('click', () => {
+      if (state.running) stop('已手动停止。');
+      else resetSession();
+    });
     input.addEventListener('change', () => {
       const value = Math.max(MIN_INTERVAL, Math.round(Number(input.value) || DEFAULT_INTERVAL));
       input.value = String(value);
@@ -357,10 +363,23 @@
   }
 
   function stopElapsedClock() {
-    state.elapsedMs = state.startedAt ? Date.now() - state.startedAt : state.elapsedMs;
+    if (state.running && state.startedAt) state.elapsedMs = Date.now() - state.startedAt;
     clearInterval(state.elapsedTimer);
     state.elapsedTimer = null;
     renderElapsed();
+  }
+
+  function resetSession() {
+    state.running = false;
+    clearTimer();
+    stopElapsedClock();
+    state.startedAt = 0;
+    state.elapsedMs = 0;
+    state.clicks = 0;
+    state.zeroMode = false;
+    state.zeroAxeClicks = 0;
+    state.zeroDisabledChecks = 0;
+    updateStatus('本次任务已重置，可以重新开始。');
   }
 
   function saveIntervalFromInput() {
@@ -380,9 +399,9 @@
   }
 
   function stop(message = '已停止。') {
+    stopElapsedClock();
     state.running = false;
     clearTimer();
-    stopElapsedClock();
     updateStatus(`${message}\n本次已调用 ${state.clicks} 次连砍。`);
   }
 
@@ -396,10 +415,7 @@
     if (!state.running) return;
 
     const axe = readAxe();
-    if (axe && axe.current <= 0) {
-      stop(`任务完成：斧力已归零。`);
-      return;
-    }
+    if (axe && axe.current <= 0) state.zeroMode = true;
 
     const button = findBatchButton();
     if (!button) {
@@ -408,14 +424,35 @@
       return;
     }
     if (buttonBusy(button)) {
-      updateStatus('等待上一批请求完成……');
+      if (state.zeroMode) {
+        state.zeroDisabledChecks += 1;
+        if (state.zeroDisabledChecks >= 5) {
+          stop('任务完成：斧力为 0，按钮已连续 5 次禁用。');
+          return;
+        }
+        updateStatus(`容错观察中：按钮禁用 ${state.zeroDisabledChecks}/5 次；额外连砍 ${state.zeroAxeClicks}/10 次。`);
+      } else {
+        updateStatus('等待上一批请求完成……');
+      }
       schedule(Math.max(getInterval(), 500));
       return;
     }
 
+    if (state.zeroMode) {
+      state.zeroDisabledChecks = 0;
+      if (state.zeroAxeClicks >= 10) {
+        updateStatus('容错连砍已达到 10 次，继续观察按钮状态……');
+        schedule(getInterval());
+        return;
+      }
+    }
+
     button.click();
     state.clicks += 1;
-    updateStatus(`运行中：已调用 ${state.clicks} 次连砍。`);
+    if (state.zeroMode) state.zeroAxeClicks += 1;
+    updateStatus(state.zeroMode
+      ? `容错连砍中：已额外调用 ${state.zeroAxeClicks}/10 次。`
+      : `运行中：已调用 ${state.clicks} 次连砍。`);
     schedule(getInterval());
   }
 
@@ -423,16 +460,17 @@
     if (state.running) return;
     saveIntervalFromInput();
     const axe = readAxe();
-    if (axe && axe.current <= 0) {
-      updateStatus('今日斧力已经归零，无需继续。');
-      return;
-    }
     state.running = true;
     state.clicks = 0;
     state.startedAt = Date.now();
     state.elapsedMs = 0;
+    state.zeroMode = Boolean(axe && axe.current <= 0);
+    state.zeroAxeClicks = 0;
+    state.zeroDisabledChecks = 0;
     startElapsedClock();
-    updateStatus(`开始运行：间隔 ${getInterval()}ms。`);
+    updateStatus(state.zeroMode
+      ? `斧力显示为 0，启动容错观察：最多额外连砍 10 次。`
+      : `开始运行：间隔 ${getInterval()}ms。`);
     runOnce();
   }
 
@@ -441,7 +479,7 @@
     const ui = window.__lingtaiAutoChop;
     if (ui && mutations.every((mutation) => ui.panel.contains(mutation.target))) return;
     const axe = readAxe();
-    if (axe && axe.current <= 0) stop('任务完成：斧力已归零。');
+    if (axe && axe.current <= 0) state.zeroMode = true;
   });
 
   function init() {
