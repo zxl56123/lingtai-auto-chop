@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         灵台自动连砍
 // @namespace    https://k40.shengqainbang.cn/
-// @version      1.3.0
+// @version      1.4.0
 // @description  按设定间隔点击“连砍 10 刀”，直到当前斧力归零。
-// @match        https://k40.shengqainbang.cn/lingtai*
+// @match        https://k40.shengqainbang.cn/*
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
@@ -17,6 +17,7 @@
   const POSITION_KEY = 'lingtai-auto-chop-position';
   const DEFAULT_INTERVAL = 1500;
   const MIN_INTERVAL = 300;
+  const TARGET_PATH = /^\/lingtai(?:\/|$)/;
 
   if (window.__lingtaiAutoChopLoaded) return;
   window.__lingtaiAutoChopLoaded = true;
@@ -219,6 +220,39 @@
     updateStatus('准备就绪，等待开始。');
   }
 
+  function isTargetPage() {
+    return TARGET_PATH.test(window.location.pathname);
+  }
+
+  function removePanel() {
+    clearTimer();
+    if (state.running) state.running = false;
+    stopElapsedClock();
+    document.getElementById(PANEL_ID)?.remove();
+    document.getElementById(STYLE_ID)?.remove();
+    delete window.__lingtaiAutoChop;
+  }
+
+  function syncPanelForRoute() {
+    if (isTargetPage()) {
+      if (!document.getElementById(PANEL_ID)) mountPanel();
+    } else if (document.getElementById(PANEL_ID)) {
+      removePanel();
+    }
+  }
+
+  function installRouteWatcher() {
+    for (const method of ['pushState', 'replaceState']) {
+      const original = history[method];
+      history[method] = function (...args) {
+        const result = original.apply(this, args);
+        window.setTimeout(syncPanelForRoute, 0);
+        return result;
+      };
+    }
+    window.addEventListener('popstate', syncPanelForRoute);
+  }
+
   function readSavedPosition() {
     try {
       const value = JSON.parse(localStorage.getItem(POSITION_KEY) || 'null');
@@ -411,7 +445,8 @@
   });
 
   function init() {
-    mountPanel();
+    installRouteWatcher();
+    syncPanelForRoute();
     observer.observe(document.body, { subtree: true, childList: true, characterData: true });
   }
 
