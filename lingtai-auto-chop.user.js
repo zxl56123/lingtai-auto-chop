@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         灵台自动连砍
 // @namespace    https://k40.shengqainbang.cn/
-// @version      1.2.0
+// @version      1.3.0
 // @description  按设定间隔点击“连砍 10 刀”，直到当前斧力归零。
 // @match        https://k40.shengqainbang.cn/lingtai*
 // @run-at       document-idle
@@ -24,8 +24,10 @@
   const state = {
     running: false,
     timer: null,
+    elapsedTimer: null,
     clicks: 0,
     startedAt: 0,
+    elapsedMs: 0,
     lastAxe: null,
   };
 
@@ -131,10 +133,10 @@
       }
       #${PANEL_ID} input:focus { color: #f3c56d; }
       #${PANEL_ID} .lac-unit { color: #a89b84; font-size: 11px; }
-      #${PANEL_ID} .lac-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+      #${PANEL_ID} .lac-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin-bottom: 12px; }
       #${PANEL_ID} .lac-stat { padding: 9px 10px; background: rgba(7, 12, 9, .38); border: 1px solid rgba(210, 170, 97, .18); border-radius: 10px; }
       #${PANEL_ID} .lac-stat-label { color: #a89b84; font-size: 10px; }
-      #${PANEL_ID} .lac-stat-value { margin-top: 2px; color: #fff3d2; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+      #${PANEL_ID} .lac-stat-value { margin-top: 2px; color: #fff3d2; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
       #${PANEL_ID} .lac-actions { display: flex; gap: 8px; margin-top: 0; }
       #${PANEL_ID} button {
         flex: 1;
@@ -189,6 +191,7 @@
       <div class="lac-stats">
         <div class="lac-stat"><div class="lac-stat-label">剩余斧力</div><div id="lac-axe-current" class="lac-stat-value">--</div></div>
         <div class="lac-stat"><div class="lac-stat-label">本次连砍</div><div id="lac-click-count" class="lac-stat-value">0 次</div></div>
+        <div class="lac-stat"><div class="lac-stat-label">运行用时</div><div id="lac-elapsed" class="lac-stat-value">00:00:00</div></div>
       </div>
       <div class="lac-actions">
         <button id="lac-start" type="button">开始连砍</button>
@@ -212,7 +215,7 @@
       if (state.running) updateStatus(`运行中：间隔 ${value}ms`);
     });
 
-    window.__lingtaiAutoChop = { panel, input, status, axeCurrent: panel.querySelector('#lac-axe-current'), clickCount: panel.querySelector('#lac-click-count') };
+    window.__lingtaiAutoChop = { panel, input, status, axeCurrent: panel.querySelector('#lac-axe-current'), clickCount: panel.querySelector('#lac-click-count'), elapsed: panel.querySelector('#lac-elapsed') };
     updateStatus('准备就绪，等待开始。');
   }
 
@@ -293,8 +296,37 @@
     ui.status.textContent = `${message}${suffix}`;
     ui.axeCurrent.textContent = axe ? formatNumber(axe.current) : '--';
     ui.clickCount.textContent = `${state.clicks} 次`;
+    renderElapsed();
     ui.panel.classList.toggle('is-running', state.running);
     ui.panel.classList.toggle('is-done', !state.running && /完成|归零/.test(message));
+  }
+
+  function formatDuration(milliseconds) {
+    const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
+  }
+
+  function renderElapsed() {
+    const ui = window.__lingtaiAutoChop;
+    if (!ui) return;
+    const elapsed = state.running ? Date.now() - state.startedAt : state.elapsedMs;
+    ui.elapsed.textContent = formatDuration(elapsed);
+  }
+
+  function startElapsedClock() {
+    clearInterval(state.elapsedTimer);
+    renderElapsed();
+    state.elapsedTimer = window.setInterval(renderElapsed, 1000);
+  }
+
+  function stopElapsedClock() {
+    state.elapsedMs = state.startedAt ? Date.now() - state.startedAt : state.elapsedMs;
+    clearInterval(state.elapsedTimer);
+    state.elapsedTimer = null;
+    renderElapsed();
   }
 
   function saveIntervalFromInput() {
@@ -316,6 +348,7 @@
   function stop(message = '已停止。') {
     state.running = false;
     clearTimer();
+    stopElapsedClock();
     updateStatus(`${message}\n本次已调用 ${state.clicks} 次连砍。`);
   }
 
@@ -363,6 +396,8 @@
     state.running = true;
     state.clicks = 0;
     state.startedAt = Date.now();
+    state.elapsedMs = 0;
+    startElapsedClock();
     updateStatus(`开始运行：间隔 ${getInterval()}ms。`);
     runOnce();
   }
