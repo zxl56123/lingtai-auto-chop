@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         灵台自动连砍
 // @namespace    https://k40.shengqainbang.cn/
-// @version      1.6.1
+// @version      1.7.1
 // @description  按设定间隔点击“连砍 10 刀”，直到当前斧力归零。
 // @match        https://k40.shengqainbang.cn/*
 // @updateURL    https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js
 // @downloadURL  https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      raw.githubusercontent.com
+// @connect      k40.shengqainbang.cn
 // ==/UserScript==
 
 (function () {
@@ -19,10 +21,11 @@
   const INTERVAL_KEY = 'lingtai-auto-chop-interval';
   const POSITION_KEY = 'lingtai-auto-chop-position';
   const UPDATE_URL = 'https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js';
-  const SCRIPT_VERSION = '1.6.1';
+  const SCRIPT_VERSION = '1.7.1';
   const DEFAULT_INTERVAL = 1500;
   const MIN_INTERVAL = 300;
   const TARGET_PATH = /^\/lingtai(?:\/|$)/;
+  const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
 
   if (window.__lingtaiAutoChopLoaded) return;
   window.__lingtaiAutoChopLoaded = true;
@@ -37,11 +40,15 @@
     zeroMode: false,
     zeroAxeClicks: 0,
     zeroDisabledChecks: 0,
+    inventoryBlocked: false,
+    inventoryUsed: null,
+    inventoryCap: null,
+    inventoryChecking: false,
     lastAxe: null,
   };
 
   const getInterval = () => {
-    const value = Number(localStorage.getItem(INTERVAL_KEY));
+    const value = Number(pageWindow.localStorage.getItem(INTERVAL_KEY));
     return Number.isFinite(value) ? Math.max(MIN_INTERVAL, Math.round(value)) : DEFAULT_INTERVAL;
   };
 
@@ -193,6 +200,13 @@
         border-radius: 9px;
         white-space: pre-line;
       }
+      #${PANEL_ID}.is-blocked .lac-status {
+        color: #fecaca;
+        background: rgba(127, 29, 29, .54);
+        border-color: rgba(248, 113, 113, .7);
+        box-shadow: 0 0 0 1px rgba(248, 113, 113, .12), 0 6px 18px rgba(127, 29, 29, .2);
+        font-weight: 700;
+      }
       #${PANEL_ID} .lac-status strong { color: #f1c86b; }
       #${PANEL_ID} .lac-hint { margin-top: 9px; color: #a89b84; font-size: 10px; }
       @media (max-width: 520px) { #${PANEL_ID} { right: 12px; bottom: 12px; left: 12px; width: auto; } }
@@ -250,7 +264,7 @@
     input.addEventListener('change', () => {
       const value = Math.max(MIN_INTERVAL, Math.round(Number(input.value) || DEFAULT_INTERVAL));
       input.value = String(value);
-      localStorage.setItem(INTERVAL_KEY, String(value));
+      pageWindow.localStorage.setItem(INTERVAL_KEY, String(value));
       if (state.running) updateStatus(`运行中：间隔 ${value}ms`);
     });
 
@@ -293,7 +307,7 @@
 
   function readSavedPosition() {
     try {
-      const value = JSON.parse(localStorage.getItem(POSITION_KEY) || 'null');
+      const value = JSON.parse(pageWindow.localStorage.getItem(POSITION_KEY) || 'null');
       return value && Number.isFinite(value.left) && Number.isFinite(value.top) ? value : null;
     } catch (_) {
       return null;
@@ -315,7 +329,7 @@
     panel.style.top = `${position.top}px`;
     panel.style.right = 'auto';
     panel.style.bottom = 'auto';
-    if (save) localStorage.setItem(POSITION_KEY, JSON.stringify(position));
+    if (save) pageWindow.localStorage.setItem(POSITION_KEY, JSON.stringify(position));
     return position;
   }
 
@@ -371,6 +385,7 @@
     ui.clickCount.textContent = `${state.clicks} 次`;
     renderElapsed();
     ui.panel.classList.toggle('is-running', state.running);
+    ui.panel.classList.toggle('is-blocked', state.inventoryBlocked);
     ui.panel.classList.toggle('is-done', !state.running && /完成|归零/.test(message));
   }
 
@@ -481,7 +496,113 @@
     state.zeroMode = false;
     state.zeroAxeClicks = 0;
     state.zeroDisabledChecks = 0;
+    state.inventoryBlocked = false;
+    state.inventoryUsed = null;
+    state.inventoryCap = null;
     updateStatus('本次任务已重置，可以重新开始。');
+  }
+
+  function getGameDeviceId() {
+    return pageWindow.localStorage.getItem('lottery_barrier_device_id') || '';
+  }
+
+  function apiRequest(method, path, body) {
+    const token = pageWindow.localStorage.getItem('auth_token') || '';
+    const url = `${window.location.origin}/api/v1${path}`;
+    const headers = { Authorization: `Bearer ${token}` };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+
+    if (typeof GM_xmlhttpRequest === 'function') {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method,
+          url,
+          headers,
+          data: body === undefined ? undefined : JSON.stringify(body),
+          timeout: 10000,
+          onload: (response) => {
+            if (response.status < 200 || response.status >= 300) {
+              reject(new Error(`接口返回状态码 ${response.status}`));
+              return;
+            }
+            try { resolve(JSON.parse(response.responseText)); }
+            catch (_) { reject(new Error('接口返回格式无效')); }
+          },
+          ontimeout: () => reject(new Error('接口请求超时')),
+          onerror: () => reject(new Error('接口请求失败')),
+        });
+      });
+    }
+
+    return fetch(url, {
+      method,
+      headers,
+      credentials: 'include',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`接口返回状态码 ${response.status}`);
+      return response.json();
+    });
+  }
+
+  function parseInventoryStatus(response) {
+    const data = response && response.data ? response.data : response;
+    const used = Number(data?.bag_used);
+    const cap = Number(data?.bag_cap);
+    if (!Number.isFinite(used) || !Number.isFinite(cap)) return null;
+    return { used, cap };
+  }
+
+  async function getInventoryStatus() {
+    const deviceId = getGameDeviceId();
+    const query = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : '';
+    const response = await apiRequest('GET', `/game/status${query}`);
+    return parseInventoryStatus(response);
+  }
+
+  async function salvageLowGear() {
+    return apiRequest('POST', '/game/salvage-batch', { max_color: 'blue' });
+  }
+
+  function pauseForInventory(message) {
+    state.inventoryBlocked = true;
+    stopElapsedClock();
+    state.running = false;
+    clearTimer();
+    updateStatus(message);
+  }
+
+  async function ensureInventoryCapacity() {
+    if (state.inventoryChecking) return false;
+    state.inventoryChecking = true;
+    try {
+      let inventory = await getInventoryStatus();
+      if (!inventory) throw new Error('无法读取仓库容量');
+      state.inventoryUsed = inventory.used;
+      state.inventoryCap = inventory.cap;
+
+      if (inventory.used < inventory.cap) return true;
+
+      updateStatus(`仓库已满 ${inventory.used}/${inventory.cap}，正在自动分解蓝色及以下装备……`);
+      await salvageLowGear();
+      inventory = await getInventoryStatus();
+      if (!inventory) throw new Error('分解后无法读取仓库容量');
+      state.inventoryUsed = inventory.used;
+      state.inventoryCap = inventory.cap;
+
+      if (inventory.used >= inventory.cap) {
+        pauseForInventory(`仓库仍然溢出：${inventory.used}/${inventory.cap}\n请手动分解装备，处理后点击“开始连砍”。`);
+        return false;
+      }
+      updateStatus(`已自动分解蓝色及以下装备，仓库 ${inventory.used}/${inventory.cap}，继续连砍。`);
+      return true;
+    } catch (error) {
+      if (!state.running) return false;
+      pauseForInventory(`无法自动处理仓库：${error.message}\n请手动检查装备，处理后点击“开始连砍”。`);
+      return false;
+    } finally {
+      state.inventoryChecking = false;
+    }
   }
 
   function saveIntervalFromInput() {
@@ -489,7 +610,7 @@
     const raw = ui ? Number(ui.input.value) : getInterval();
     const value = Math.max(MIN_INTERVAL, Math.round(Number.isFinite(raw) ? raw : DEFAULT_INTERVAL));
     if (ui) ui.input.value = String(value);
-    localStorage.setItem(INTERVAL_KEY, String(value));
+    pageWindow.localStorage.setItem(INTERVAL_KEY, String(value));
     return value;
   }
 
@@ -513,8 +634,10 @@
     state.timer = window.setTimeout(runOnce, delay);
   }
 
-  function runOnce() {
+  async function runOnce() {
     if (!state.running) return;
+
+    if (!(await ensureInventoryCapacity()) || !state.running) return;
 
     const axe = readAxe();
     if (axe && axe.current <= 0) state.zeroMode = true;
@@ -569,6 +692,9 @@
     state.zeroMode = Boolean(axe && axe.current <= 0);
     state.zeroAxeClicks = 0;
     state.zeroDisabledChecks = 0;
+    state.inventoryBlocked = false;
+    state.inventoryUsed = null;
+    state.inventoryCap = null;
     startElapsedClock();
     updateStatus(state.zeroMode
       ? `斧力显示为 0，启动容错观察：最多额外连砍 10 次。`
