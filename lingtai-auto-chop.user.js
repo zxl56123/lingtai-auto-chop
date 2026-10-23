@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         灵台自动连砍
 // @namespace    https://k40.shengqainbang.cn/
-// @version      1.6.0
+// @version      1.6.1
 // @description  按设定间隔点击“连砍 10 刀”，直到当前斧力归零。
 // @match        https://k40.shengqainbang.cn/*
 // @updateURL    https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js
@@ -19,7 +19,7 @@
   const INTERVAL_KEY = 'lingtai-auto-chop-interval';
   const POSITION_KEY = 'lingtai-auto-chop-position';
   const UPDATE_URL = 'https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js';
-  const SCRIPT_VERSION = '1.6.0';
+  const SCRIPT_VERSION = '1.6.1';
   const DEFAULT_INTERVAL = 1500;
   const MIN_INTERVAL = 300;
   const TARGET_PATH = /^\/lingtai(?:\/|$)/;
@@ -147,10 +147,14 @@
       #${PANEL_ID} .lac-stat-label { color: #a89b84; font-size: 10px; }
       #${PANEL_ID} .lac-stat-value { margin-top: 2px; color: #fff3d2; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
       #${PANEL_ID} .lac-actions { display: flex; gap: 8px; margin-top: 0; }
-      #${PANEL_ID} .lac-update {
-        width: 100%;
-        margin-top: 8px;
-        padding: 6px 10px;
+      #${PANEL_ID} #lac-update {
+        display: grid;
+        place-items: center;
+        flex: 0 0 32px;
+        width: 32px;
+        height: 32px;
+        margin: 0 0 0 3px;
+        padding: 0;
         color: #d9c8a5;
         background: rgba(95, 83, 63, .2);
         border: 1px solid rgba(210, 170, 97, .24);
@@ -158,8 +162,11 @@
         font-size: 11px;
         font-weight: 600;
       }
-      #${PANEL_ID} .lac-update:hover { color: #fff3d2; background: rgba(174, 111, 28, .2); }
-      #${PANEL_ID} .lac-update:disabled { cursor: wait; opacity: .62; transform: none; filter: none; }
+      #${PANEL_ID} #lac-update:hover { color: #fff3d2; background: rgba(174, 111, 28, .2); }
+      #${PANEL_ID} #lac-update:disabled { cursor: wait; opacity: .62; transform: none; filter: none; }
+      #${PANEL_ID} #lac-update svg { display: block; width: 17px; height: 17px; }
+      #${PANEL_ID} #lac-update:disabled svg { animation: lac-update-spin 1s linear infinite; }
+      @keyframes lac-update-spin { to { transform: rotate(360deg); } }
       #${PANEL_ID} button {
         flex: 1;
         padding: 8px 10px;
@@ -205,6 +212,12 @@
         <div class="lac-icon" aria-hidden="true">🪓</div>
         <div class="lac-title-wrap"><div class="lac-kicker">灵木工具</div><div class="lac-title">自动连砍</div></div>
         <span class="lac-dot" aria-label="当前状态"></span>
+        <button id="lac-update" type="button" title="检查更新" aria-label="检查更新" aria-busy="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M20 7v5h-5M4 17v-5h5" />
+            <path d="M6.1 7a7 7 0 0 1 11.6-1L20 12M4 12l2.3 6A7 7 0 0 0 17.9 17" />
+          </svg>
+        </button>
       </div>
       <div class="lac-row">
         <label for="lac-interval">点击间隔</label>
@@ -219,7 +232,6 @@
         <button id="lac-start" type="button">开始连砍</button>
         <button id="lac-stop" type="button">停止</button>
       </div>
-      <button id="lac-update" class="lac-update" type="button">↻ 检查更新</button>
       <div id="lac-status" class="lac-status">准备就绪，等待开始。</div>
       <div class="lac-hint">间隔至少 ${MIN_INTERVAL}ms；斧力归零后自动停止。</div>
     `;
@@ -317,6 +329,7 @@
     let drag = null;
 
     handle.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('button')) return;
       if (event.button !== undefined && event.button !== 0) return;
       const rect = panel.getBoundingClientRect();
       drag = { pointerId: event.pointerId, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
@@ -401,12 +414,16 @@
     const ui = window.__lingtaiAutoChop;
     if (!ui || ui.updateButton?.disabled) return;
     ui.updateButton.disabled = true;
-    ui.updateButton.textContent = '⌛ 正在检查更新…';
+    ui.updateButton.setAttribute('aria-busy', 'true');
+    ui.updateButton.setAttribute('aria-label', '正在检查更新');
+    ui.updateButton.title = '正在检查更新…';
     updateStatus(`正在检查最新版本（当前 v${SCRIPT_VERSION}）……`);
     fetchLatestSource((source) => {
       const latestVersion = extractVersion(source);
       ui.updateButton.disabled = false;
-      ui.updateButton.textContent = '↻ 检查更新';
+      ui.updateButton.setAttribute('aria-busy', 'false');
+      ui.updateButton.setAttribute('aria-label', '检查更新');
+      ui.updateButton.title = '检查更新';
       if (!latestVersion) {
         updateStatus('无法识别 GitHub 上的版本号，请稍后重试。');
         return;
@@ -419,7 +436,9 @@
       }
     }, (message) => {
       ui.updateButton.disabled = false;
-      ui.updateButton.textContent = '↻ 检查更新';
+      ui.updateButton.setAttribute('aria-busy', 'false');
+      ui.updateButton.setAttribute('aria-label', '检查更新');
+      ui.updateButton.title = '检查更新';
       updateStatus(`${message}，请稍后重试。`);
     });
   }
