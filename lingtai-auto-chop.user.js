@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         灵台自动连砍
 // @namespace    https://k40.shengqainbang.cn/
-// @version      1.7.1
+// @version      1.7.2
 // @description  按设定间隔点击“连砍 10 刀”，直到当前斧力归零。
 // @match        https://k40.shengqainbang.cn/*
 // @updateURL    https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js
@@ -21,9 +21,10 @@
   const INTERVAL_KEY = 'lingtai-auto-chop-interval';
   const POSITION_KEY = 'lingtai-auto-chop-position';
   const UPDATE_URL = 'https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js';
-  const SCRIPT_VERSION = '1.7.1';
+  const SCRIPT_VERSION = '1.7.2';
   const DEFAULT_INTERVAL = 1500;
   const MIN_INTERVAL = 300;
+  const INVENTORY_SALVAGE_THRESHOLD = 70;
   const TARGET_PATH = /^\/lingtai(?:\/|$)/;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
 
@@ -581,17 +582,17 @@
       state.inventoryUsed = inventory.used;
       state.inventoryCap = inventory.cap;
 
-      if (inventory.used < inventory.cap) return true;
+      if (inventory.used < Math.min(INVENTORY_SALVAGE_THRESHOLD, inventory.cap)) return true;
 
-      updateStatus(`仓库已满 ${inventory.used}/${inventory.cap}，正在自动分解蓝色及以下装备……`);
+      updateStatus(`仓库达到清理阈值 ${Math.min(INVENTORY_SALVAGE_THRESHOLD, inventory.cap)} 件（${inventory.used}/${inventory.cap}），正在自动分解蓝色及以下装备……`);
       await salvageLowGear();
       inventory = await getInventoryStatus();
       if (!inventory) throw new Error('分解后无法读取仓库容量');
       state.inventoryUsed = inventory.used;
       state.inventoryCap = inventory.cap;
 
-      if (inventory.used >= inventory.cap) {
-        pauseForInventory(`仓库仍然溢出：${inventory.used}/${inventory.cap}\n请手动分解装备，处理后点击“开始连砍”。`);
+      if (inventory.used >= Math.min(INVENTORY_SALVAGE_THRESHOLD, inventory.cap)) {
+        pauseForInventory(`分解后仍达到清理阈值 ${Math.min(INVENTORY_SALVAGE_THRESHOLD, inventory.cap)} 件：${inventory.used}/${inventory.cap}\n请手动分解装备，处理后点击“开始连砍”。`);
         return false;
       }
       updateStatus(`已自动分解蓝色及以下装备，仓库 ${inventory.used}/${inventory.cap}，继续连砍。`);
