@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         灵台自动连砍
 // @namespace    https://k40.shengqainbang.cn/
-// @version      1.5.0
+// @version      1.6.0
 // @description  按设定间隔点击“连砍 10 刀”，直到当前斧力归零。
 // @match        https://k40.shengqainbang.cn/*
+// @updateURL    https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js
+// @downloadURL  https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      raw.githubusercontent.com
 // ==/UserScript==
 
 (function () {
@@ -15,6 +18,8 @@
   const STYLE_ID = 'lingtai-auto-chop-style';
   const INTERVAL_KEY = 'lingtai-auto-chop-interval';
   const POSITION_KEY = 'lingtai-auto-chop-position';
+  const UPDATE_URL = 'https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js';
+  const SCRIPT_VERSION = '1.6.0';
   const DEFAULT_INTERVAL = 1500;
   const MIN_INTERVAL = 300;
   const TARGET_PATH = /^\/lingtai(?:\/|$)/;
@@ -142,6 +147,19 @@
       #${PANEL_ID} .lac-stat-label { color: #a89b84; font-size: 10px; }
       #${PANEL_ID} .lac-stat-value { margin-top: 2px; color: #fff3d2; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
       #${PANEL_ID} .lac-actions { display: flex; gap: 8px; margin-top: 0; }
+      #${PANEL_ID} .lac-update {
+        width: 100%;
+        margin-top: 8px;
+        padding: 6px 10px;
+        color: #d9c8a5;
+        background: rgba(95, 83, 63, .2);
+        border: 1px solid rgba(210, 170, 97, .24);
+        border-radius: 8px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      #${PANEL_ID} .lac-update:hover { color: #fff3d2; background: rgba(174, 111, 28, .2); }
+      #${PANEL_ID} .lac-update:disabled { cursor: wait; opacity: .62; transform: none; filter: none; }
       #${PANEL_ID} button {
         flex: 1;
         padding: 8px 10px;
@@ -201,6 +219,7 @@
         <button id="lac-start" type="button">开始连砍</button>
         <button id="lac-stop" type="button">停止</button>
       </div>
+      <button id="lac-update" class="lac-update" type="button">↻ 检查更新</button>
       <div id="lac-status" class="lac-status">准备就绪，等待开始。</div>
       <div class="lac-hint">间隔至少 ${MIN_INTERVAL}ms；斧力归零后自动停止。</div>
     `;
@@ -215,6 +234,7 @@
       if (state.running) stop('已手动停止。');
       else resetSession();
     });
+    panel.querySelector('#lac-update').addEventListener('click', checkForUpdate);
     input.addEventListener('change', () => {
       const value = Math.max(MIN_INTERVAL, Math.round(Number(input.value) || DEFAULT_INTERVAL));
       input.value = String(value);
@@ -222,7 +242,7 @@
       if (state.running) updateStatus(`运行中：间隔 ${value}ms`);
     });
 
-    window.__lingtaiAutoChop = { panel, input, status, axeCurrent: panel.querySelector('#lac-axe-current'), clickCount: panel.querySelector('#lac-click-count'), elapsed: panel.querySelector('#lac-elapsed') };
+    window.__lingtaiAutoChop = { panel, input, status, updateButton: panel.querySelector('#lac-update'), axeCurrent: panel.querySelector('#lac-axe-current'), clickCount: panel.querySelector('#lac-click-count'), elapsed: panel.querySelector('#lac-elapsed') };
     updateStatus('准备就绪，等待开始。');
   }
 
@@ -339,6 +359,69 @@
     renderElapsed();
     ui.panel.classList.toggle('is-running', state.running);
     ui.panel.classList.toggle('is-done', !state.running && /完成|归零/.test(message));
+  }
+
+  function compareVersions(left, right) {
+    const parse = (value) => String(value).replace(/^v/i, '').split('.').map((part) => Number.parseInt(part, 10) || 0);
+    const a = parse(left);
+    const b = parse(right);
+    for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+      const diff = (a[index] || 0) - (b[index] || 0);
+      if (diff !== 0) return diff;
+    }
+    return 0;
+  }
+
+  function extractVersion(source) {
+    const match = String(source).match(/^\s*\/\/\s*@version\s+([^\r\n]+)/m);
+    return match ? match[1].trim() : null;
+  }
+
+  function fetchLatestSource(onSuccess, onError) {
+    if (typeof GM_xmlhttpRequest === 'function') {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: `${UPDATE_URL}?t=${Date.now()}`,
+        timeout: 10000,
+        onload: (response) => response.status >= 200 && response.status < 300
+          ? onSuccess(response.responseText)
+          : onError(`GitHub 返回状态码 ${response.status}`),
+        ontimeout: () => onError('检查更新超时'),
+        onerror: () => onError('无法连接 GitHub'),
+      });
+      return;
+    }
+    fetch(`${UPDATE_URL}?t=${Date.now()}`, { cache: 'no-store' })
+      .then((response) => response.ok ? response.text() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then(onSuccess)
+      .catch(() => onError('无法连接 GitHub'));
+  }
+
+  function checkForUpdate() {
+    const ui = window.__lingtaiAutoChop;
+    if (!ui || ui.updateButton?.disabled) return;
+    ui.updateButton.disabled = true;
+    ui.updateButton.textContent = '⌛ 正在检查更新…';
+    updateStatus(`正在检查最新版本（当前 v${SCRIPT_VERSION}）……`);
+    fetchLatestSource((source) => {
+      const latestVersion = extractVersion(source);
+      ui.updateButton.disabled = false;
+      ui.updateButton.textContent = '↻ 检查更新';
+      if (!latestVersion) {
+        updateStatus('无法识别 GitHub 上的版本号，请稍后重试。');
+        return;
+      }
+      if (compareVersions(latestVersion, SCRIPT_VERSION) > 0) {
+        updateStatus(`发现新版本 v${latestVersion}，正在打开更新安装页……`);
+        window.open(UPDATE_URL, '_blank', 'noopener,noreferrer');
+      } else {
+        updateStatus(`已是最新版本 v${SCRIPT_VERSION}。`);
+      }
+    }, (message) => {
+      ui.updateButton.disabled = false;
+      ui.updateButton.textContent = '↻ 检查更新';
+      updateStatus(`${message}，请稍后重试。`);
+    });
   }
 
   function formatDuration(milliseconds) {
