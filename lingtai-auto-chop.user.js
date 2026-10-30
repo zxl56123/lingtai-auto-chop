@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         灵台自动连砍
 // @namespace    https://k40.shengqainbang.cn/
-// @version      1.7.2
+// @version      1.8.0
 // @description  按设定间隔点击“连砍 10 刀”，直到当前斧力归零。
 // @match        https://k40.shengqainbang.cn/*
 // @updateURL    https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js
@@ -19,11 +19,19 @@
   const PANEL_ID = 'lingtai-auto-chop-panel';
   const STYLE_ID = 'lingtai-auto-chop-style';
   const INTERVAL_KEY = 'lingtai-auto-chop-interval';
+  const REQUEST_TIMEOUT_KEY = 'lingtai-auto-chop-request-timeout';
+  const REQUEST_RETRIES_KEY = 'lingtai-auto-chop-request-retries';
   const POSITION_KEY = 'lingtai-auto-chop-position';
   const UPDATE_URL = 'https://raw.githubusercontent.com/zxl56123/lingtai-auto-chop/main/lingtai-auto-chop.user.js';
-  const SCRIPT_VERSION = '1.7.2';
+  const SCRIPT_VERSION = '1.8.0';
   const DEFAULT_INTERVAL = 1500;
   const MIN_INTERVAL = 300;
+  const DEFAULT_REQUEST_TIMEOUT = 60000;
+  const MIN_REQUEST_TIMEOUT = 1000;
+  const MAX_REQUEST_TIMEOUT = 300000;
+  const DEFAULT_REQUEST_RETRIES = 3;
+  const MIN_REQUEST_RETRIES = 1;
+  const MAX_REQUEST_RETRIES = 5;
   const INVENTORY_SALVAGE_THRESHOLD = 70;
   const TARGET_PATH = /^\/lingtai(?:\/|$)/;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -46,11 +54,26 @@
     inventoryCap: null,
     inventoryChecking: false,
     lastAxe: null,
+    runToken: 0,
   };
 
   const getInterval = () => {
     const value = Number(pageWindow.localStorage.getItem(INTERVAL_KEY));
     return Number.isFinite(value) ? Math.max(MIN_INTERVAL, Math.round(value)) : DEFAULT_INTERVAL;
+  };
+
+  const getRequestTimeout = () => {
+    const value = Number(pageWindow.localStorage.getItem(REQUEST_TIMEOUT_KEY));
+    return Number.isFinite(value)
+      ? Math.min(MAX_REQUEST_TIMEOUT, Math.max(MIN_REQUEST_TIMEOUT, Math.round(value)))
+      : DEFAULT_REQUEST_TIMEOUT;
+  };
+
+  const getRequestRetries = () => {
+    const value = Number(pageWindow.localStorage.getItem(REQUEST_RETRIES_KEY));
+    return Number.isFinite(value)
+      ? Math.min(MAX_REQUEST_RETRIES, Math.max(MIN_REQUEST_RETRIES, Math.round(value)))
+      : DEFAULT_REQUEST_RETRIES;
   };
 
   const formatNumber = (value) => Number(value).toLocaleString('zh-CN');
@@ -238,6 +261,14 @@
         <label for="lac-interval">点击间隔</label>
         <div class="lac-field"><input id="lac-interval" type="number" min="${MIN_INTERVAL}" step="100" value="${getInterval()}" inputmode="numeric"><span class="lac-unit">ms</span></div>
       </div>
+      <div class="lac-row">
+        <label for="lac-request-timeout">请求超时</label>
+        <div class="lac-field"><input id="lac-request-timeout" type="number" min="${MIN_REQUEST_TIMEOUT / 1000}" max="${MAX_REQUEST_TIMEOUT / 1000}" step="1" value="${getRequestTimeout() / 1000}" inputmode="numeric"><span class="lac-unit">秒</span></div>
+      </div>
+      <div class="lac-row">
+        <label for="lac-request-retries">失败重试</label>
+        <div class="lac-field"><input id="lac-request-retries" type="number" min="${MIN_REQUEST_RETRIES}" max="${MAX_REQUEST_RETRIES}" step="1" value="${getRequestRetries()}" inputmode="numeric"><span class="lac-unit">次</span></div>
+      </div>
       <div class="lac-stats">
         <div class="lac-stat"><div class="lac-stat-label">剩余斧力</div><div id="lac-axe-current" class="lac-stat-value">--</div></div>
         <div class="lac-stat"><div class="lac-stat-label">本次连砍</div><div id="lac-click-count" class="lac-stat-value">0 次</div></div>
@@ -248,12 +279,14 @@
         <button id="lac-stop" type="button">停止</button>
       </div>
       <div id="lac-status" class="lac-status">准备就绪，等待开始。</div>
-      <div class="lac-hint">间隔至少 ${MIN_INTERVAL}ms；斧力归零后自动停止。</div>
+      <div class="lac-hint">请求默认超时 ${DEFAULT_REQUEST_TIMEOUT / 1000} 秒，失败重试 ${DEFAULT_REQUEST_RETRIES} 次；斧力归零后自动停止。</div>
     `;
     document.body.appendChild(panel);
     restorePanelPosition(panel);
 
     const input = panel.querySelector('#lac-interval');
+    const requestTimeoutInput = panel.querySelector('#lac-request-timeout');
+    const requestRetriesInput = panel.querySelector('#lac-request-retries');
     const status = panel.querySelector('#lac-status');
     bindPanelDrag(panel, panel.querySelector('.lac-head'));
     panel.querySelector('#lac-start').addEventListener('click', start);
@@ -269,7 +302,23 @@
       if (state.running) updateStatus(`运行中：间隔 ${value}ms`);
     });
 
-    window.__lingtaiAutoChop = { panel, input, status, updateButton: panel.querySelector('#lac-update'), axeCurrent: panel.querySelector('#lac-axe-current'), clickCount: panel.querySelector('#lac-click-count'), elapsed: panel.querySelector('#lac-elapsed') };
+    requestTimeoutInput.addEventListener('change', () => {
+      const raw = Number(requestTimeoutInput.value) * 1000;
+      const value = Math.min(MAX_REQUEST_TIMEOUT, Math.max(MIN_REQUEST_TIMEOUT, Math.round(Number.isFinite(raw) ? raw : DEFAULT_REQUEST_TIMEOUT)));
+      requestTimeoutInput.value = String(value / 1000);
+      pageWindow.localStorage.setItem(REQUEST_TIMEOUT_KEY, String(value));
+      if (state.running) updateStatus(`运行中：请求超时 ${value / 1000} 秒，失败重试 ${getRequestRetries()} 次`);
+    });
+
+    requestRetriesInput.addEventListener('change', () => {
+      const raw = Number(requestRetriesInput.value);
+      const value = Math.min(MAX_REQUEST_RETRIES, Math.max(MIN_REQUEST_RETRIES, Math.round(Number.isFinite(raw) ? raw : DEFAULT_REQUEST_RETRIES)));
+      requestRetriesInput.value = String(value);
+      pageWindow.localStorage.setItem(REQUEST_RETRIES_KEY, String(value));
+      if (state.running) updateStatus(`运行中：请求超时 ${getRequestTimeout() / 1000} 秒，失败重试 ${value} 次`);
+    });
+
+    window.__lingtaiAutoChop = { panel, input, requestTimeoutInput, requestRetriesInput, status, updateButton: panel.querySelector('#lac-update'), axeCurrent: panel.querySelector('#lac-axe-current'), clickCount: panel.querySelector('#lac-click-count'), elapsed: panel.querySelector('#lac-elapsed') };
     updateStatus('准备就绪，等待开始。');
   }
 
@@ -488,6 +537,7 @@
   }
 
   function resetSession() {
+    state.runToken += 1;
     state.running = false;
     clearTimer();
     stopElapsedClock();
@@ -507,43 +557,104 @@
     return pageWindow.localStorage.getItem('lottery_barrier_device_id') || '';
   }
 
-  function apiRequest(method, path, body) {
+  function createRequestError(message, retryable = true) {
+    const error = new Error(message);
+    error.retryable = retryable;
+    return error;
+  }
+
+  function requestOnce(method, url, headers, body, timeout) {
+    if (typeof GM_xmlhttpRequest === 'function') {
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          callback(value);
+        };
+        try {
+          GM_xmlhttpRequest({
+            method,
+            url,
+            headers,
+            data: body === undefined ? undefined : JSON.stringify(body),
+            timeout,
+            onload: (response) => {
+              if (response.status < 200 || response.status >= 300) {
+                const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+                finish(reject, createRequestError(`接口返回状态码 ${response.status}`, retryable));
+                return;
+              }
+              try {
+                finish(resolve, JSON.parse(response.responseText));
+              } catch (_) {
+                finish(reject, createRequestError('接口返回格式无效', false));
+              }
+            },
+            ontimeout: () => finish(reject, createRequestError('接口请求超时')),
+            onerror: () => finish(reject, createRequestError('接口请求失败')),
+          });
+        } catch (_) {
+          finish(reject, createRequestError('接口请求失败'));
+        }
+      });
+    }
+
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    let timer = null;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = window.setTimeout(() => {
+        controller?.abort();
+        reject(createRequestError('接口请求超时'));
+      }, timeout);
+    });
+    const responsePromise = fetch(url, {
+      method,
+      headers,
+      credentials: 'include',
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller?.signal,
+    }).then(async (response) => {
+      if (!response.ok) {
+        const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+        throw createRequestError(`接口返回状态码 ${response.status}`, retryable);
+      }
+      try {
+        return await response.json();
+      } catch (_) {
+        throw createRequestError('接口返回格式无效', false);
+      }
+    }).catch((error) => {
+      if (error?.name === 'AbortError') throw createRequestError('接口请求超时');
+      throw error;
+    });
+    return Promise.race([responsePromise, timeoutPromise]).finally(() => window.clearTimeout(timer));
+  }
+
+  function wait(milliseconds) {
+    return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+  }
+
+  async function apiRequest(method, path, body) {
     const token = pageWindow.localStorage.getItem('auth_token') || '';
     const url = `${window.location.origin}/api/v1${path}`;
     const headers = { Authorization: `Bearer ${token}` };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
 
-    if (typeof GM_xmlhttpRequest === 'function') {
-      return new Promise((resolve, reject) => {
-        GM_xmlhttpRequest({
-          method,
-          url,
-          headers,
-          data: body === undefined ? undefined : JSON.stringify(body),
-          timeout: 10000,
-          onload: (response) => {
-            if (response.status < 200 || response.status >= 300) {
-              reject(new Error(`接口返回状态码 ${response.status}`));
-              return;
-            }
-            try { resolve(JSON.parse(response.responseText)); }
-            catch (_) { reject(new Error('接口返回格式无效')); }
-          },
-          ontimeout: () => reject(new Error('接口请求超时')),
-          onerror: () => reject(new Error('接口请求失败')),
-        });
-      });
+    const retries = getRequestRetries();
+    const timeout = getRequestTimeout();
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        return await requestOnce(method, url, headers, body, timeout);
+      } catch (error) {
+        lastError = error;
+        if (!error?.retryable || attempt >= retries) break;
+        updateStatus(`接口请求失败，正在重试（${attempt + 1}/${retries}）……`);
+        await wait(Math.min(5000, 1000 * (attempt + 1)));
+      }
     }
-
-    return fetch(url, {
-      method,
-      headers,
-      credentials: 'include',
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }).then(async (response) => {
-      if (!response.ok) throw new Error(`接口返回状态码 ${response.status}`);
-      return response.json();
-    });
+    throw lastError || createRequestError('接口请求失败', false);
   }
 
   function parseInventoryStatus(response) {
@@ -574,10 +685,15 @@
   }
 
   async function ensureInventoryCapacity() {
-    if (state.inventoryChecking) return false;
+    if (state.inventoryChecking) {
+      schedule(Math.max(getInterval(), 1000));
+      return false;
+    }
+    const runToken = state.runToken;
     state.inventoryChecking = true;
     try {
       let inventory = await getInventoryStatus();
+      if (!state.running || runToken !== state.runToken) return false;
       if (!inventory) throw new Error('无法读取仓库容量');
       state.inventoryUsed = inventory.used;
       state.inventoryCap = inventory.cap;
@@ -586,7 +702,9 @@
 
       updateStatus(`仓库达到清理阈值 ${Math.min(INVENTORY_SALVAGE_THRESHOLD, inventory.cap)} 件（${inventory.used}/${inventory.cap}），正在自动分解蓝色及以下装备……`);
       await salvageLowGear();
+      if (!state.running || runToken !== state.runToken) return false;
       inventory = await getInventoryStatus();
+      if (!state.running || runToken !== state.runToken) return false;
       if (!inventory) throw new Error('分解后无法读取仓库容量');
       state.inventoryUsed = inventory.used;
       state.inventoryCap = inventory.cap;
@@ -598,7 +716,7 @@
       updateStatus(`已自动分解蓝色及以下装备，仓库 ${inventory.used}/${inventory.cap}，继续连砍。`);
       return true;
     } catch (error) {
-      if (!state.running) return false;
+      if (!state.running || runToken !== state.runToken) return false;
       pauseForInventory(`无法自动处理仓库：${error.message}\n请手动检查装备，处理后点击“开始连砍”。`);
       return false;
     } finally {
@@ -623,6 +741,7 @@
   }
 
   function stop(message = '已停止。') {
+    state.runToken += 1;
     stopElapsedClock();
     state.running = false;
     clearTimer();
@@ -637,8 +756,9 @@
 
   async function runOnce() {
     if (!state.running) return;
+    const runToken = state.runToken;
 
-    if (!(await ensureInventoryCapacity()) || !state.running) return;
+    if (!(await ensureInventoryCapacity()) || !state.running || runToken !== state.runToken) return;
 
     const axe = readAxe();
     if (axe && axe.current <= 0) state.zeroMode = true;
@@ -686,6 +806,7 @@
     if (state.running) return;
     saveIntervalFromInput();
     const axe = readAxe();
+    state.runToken += 1;
     state.running = true;
     state.clicks = 0;
     state.startedAt = Date.now();
